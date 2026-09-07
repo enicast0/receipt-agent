@@ -73,3 +73,84 @@ having real spend protection yet.
   survey page blocks automated fetching) — recommend confirming before Session 4.
 
 **Style history:** N/A — not a UI-touching session.
+
+---
+
+## Session 2: Decision-Ledger Reasoning
+
+**Date:** 2026-09-05
+**Goal:** Implement the real read-only rule-fetch and plain-language narration logic —
+no execution wiring yet.
+
+**Files added/changed:**
+- `skill/scripts/check-and-log.js` — `fetchWalletRules()`, `getSwapQuote()`, and
+  `narrateDecision()` are now real implementations, not stubs. `checkAndExecute()` remains
+  a stub (Session 3). `logDecision()` unchanged from Session 1.
+- `skill/SKILL.md` — status section updated; known limitation on stablecoin-only USD
+  estimation documented; note added that Binance's own token-audit security pre-check still
+  applies independently of this project's guardrail.
+- `package.json` — added; declares Node >=18, zero npm dependencies by design.
+
+**Current full file tree:**
+```
+.
+├── .gitignore
+├── README.md
+├── SESSION_REPORT.md
+├── package.json
+└── skill
+    ├── SKILL.md
+    ├── guardrails.config.json
+    └── scripts
+        ├── check-and-log.js
+        └── decisions.log.jsonl
+```
+
+**Dependencies installed:** None (Node built-ins only — `fs`, `path`, `child_process`).
+
+**Supabase schema state:** N/A — Agent-skill pattern.
+
+**Env vars required:** None — unchanged from Session 1.
+
+**Agent OS mode:** testnet (practical) — unchanged from Session 1; still unconfirmed hands-on.
+
+**Sub-account scope & limits:** Unchanged from Session 1. `MAX_ACTION_USD = 10` is now actually
+*read and compared* by `narrateDecision()`, but still not *enforced* against a real execution
+path — `checkAndExecute()` is the only place that will matter, and it's still a stub.
+
+**Decision log (this session):** None. A smoke-test entry was written during development to
+confirm `logDecision()` works, then deliberately cleared — `decisions.log.jsonl` ships empty,
+since no real or testnet action has been taken yet.
+
+**API endpoints live:** None.
+
+**Verification performed (Section 9.8):** `fetchWalletRules()`, `getSwapQuote()`, and
+`narrateDecision()` were unit-tested against mock data shaped exactly like the real JSON
+response documented in Binance's public `binance-agentic-wallet` skill reference
+(`wallet-setting.md` and `market-order.md` in the `binance/binance-skills-hub` GitHub repo).
+Four cases were run: within both limits, over this project's own ceiling, over Binance's
+remaining daily quota, and a non-stablecoin source correctly refused. All four produced the
+expected `proceed` value. This is **documentation-verified, not execution-verified** — no live
+`baw` CLI call has been made, since this build environment has no network access and no
+connected Binance account. Confirm against a real wallet before the actual demo recording.
+
+**Known stubs/mocks/TODOs:**
+- `checkAndExecute()` — still throws; Session 3 must implement it, including the mandatory
+  poll-to-terminal-state step after `market-order swap` (an `orderId` means submitted, not
+  completed — status must reach `FINISHED` or `FAILED` before reporting anything to the user).
+- Swaps from a non-stablecoin source are refused by design, not a bug — out of scope for the MVP.
+- `wallet send` (transfer) and `defi deposit`/`defi lp-add` follow the same guardrail pattern
+  but are not wired to any function yet — only swap is implemented.
+- No price-oracle lookup exists for non-stable-source USD estimation.
+
+**Assumptions carried into next session:**
+- Everything carried from Session 1 (live connection still needs human confirmation; no
+  confirmed Agentic Wallet sandbox mode; judging rubric still unconfirmed) — still open.
+- Session 3 needs `baw` actually installed and signed in to test `checkAndExecute()` for real —
+  this cannot be verified further in a sandboxed, network-disabled environment.
+- The exact JSON error shape `baw` returns for a rejected swap (daily limit exceeded, token not
+  allow-listed, etc.) is documented narratively in Binance's `wallet-setting.md` but the literal
+  error response schema itself wasn't published in what's public — Session 3 should confirm this
+  on first real rejected call, per Section 9.8, rather than assume a shape.
+
+**Style history:** N/A — not a UI-touching session.

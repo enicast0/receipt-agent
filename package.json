@@ -1,0 +1,11 @@
+{
+  "name": "receipts-skill",
+  "private": true,
+  "description": "Guardrail + decision-ledger logic wrapping Binance Agentic Wallet's baw CLI. No npm dependencies by design — only Node built-ins (fs, path, child_process) are used.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "log-test": "node -e \"require('./skill/scripts/check-and-log.js')\""
+  }
+}

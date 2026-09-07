@@ -37,14 +37,24 @@ For every user request that could result in an on-chain action (swap, transfer, 
    `scripts/check-and-log.js`, so the limit check and the log entry cannot be skipped by a
    miscounted step in reasoning.
 
-## Current status (Session 1)
+## Current status (Session 2)
 
 - Wallet connection: pending manual setup — see repo `README.md` for the exact steps. This
   agent should not assume a wallet is connected until that setup is confirmed complete.
-- `scripts/check-and-log.js` is a **stub**. It defines the function signature and the log format
-  but does not yet call any real Agentic Wallet skill function. Do not treat it as working
-  enforcement yet — Session 2 adds the rule-fetch and narration logic; Session 3 wires the actual
-  write-path enforcement.
-- The first real call to any Agentic Wallet skill function (read-only or read+write) must be
-  treated as unverified until its actual response shape is confirmed once, per the build
-  ruleset's Section 9.8 — don't build narration logic against an assumed response format.
+- `scripts/check-and-log.js` now has **real, working** read-only logic: `fetchWalletRules()`
+  (shells out to `baw wallet settings --json`), `getSwapQuote()` (`baw market-order quote --json`),
+  and `narrateDecision()` (pure comparison logic, unit-tested against mock data shaped like
+  Binance's documented response). These are written against Binance's public `binance-agentic-wallet`
+  reference docs, not against a live call — confirm against your actual connected wallet before
+  trusting the numbers in a real demo.
+- `checkAndExecute()` is still a **stub** — it must never be wired to a real `market-order swap`
+  call until Session 3, which also has to implement the mandatory poll-to-terminal-state step
+  (an `orderId` from `market-order swap` means submitted, not completed — see the function's
+  own comments for the full sequence).
+- **Known limitation:** this project can only estimate a swap's USD value when the source token
+  is a stablecoin (USDT/USDC), since `market-order quote` returns token amounts, not USD, and no
+  price oracle is wired in. Swaps from a non-stable token are out of scope for this MVP —
+  `narrateDecision()` refuses them outright rather than guessing a conversion.
+- Security pre-check for swaps (the `query-token-audit` flow in Binance's own `security.md`)
+  still applies on top of everything here — this project's guardrail is an addition to Binance's
+  own checks, not a replacement for them.

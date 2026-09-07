@@ -1,10 +1,10 @@
 # Receipts (working title)
 
 An onchain copilot for **Binance Agentic Wallet** built for the Binance Agent OS Mini Hackathon,
-Track A. Every proposed swap or transfer is checked against the wallet's own user-configured
-rules and this project's own hard limit *before* anything executes, and every decision —
-approved, refused, or requiring confirmation — is logged with a reason. Built for the
-Onchain Workflows track: [see `BUILD_ROADMAP.md`] for the full session plan.
+Track A. Most DeFi agents just execute. This one reads your wallet's own configured rules and
+a real, live token-security score before proposing anything, explains the decision in plain
+language, and writes every outcome — approved or refused — to an append-only ledger. Nothing
+here can act outside limits you set; nothing here acts without leaving a record of why.
 
 ## Status
 
@@ -20,11 +20,18 @@ your behalf inside a build session.
 1. **Prerequisites:** Node.js 18+, a Binance account.
 2. **Create an MPC Wallet** in the Binance App if you don't already have one (required before an
    Agentic Wallet can exist).
-3. **Install the skill** in whatever MCP-compatible client you're using for this project
-   (Claude Code, Claude Desktop, etc.):
+3. **Install the skills** in whatever MCP-compatible client you're using for this project
+   (Claude Code, Claude Desktop, etc.) — three, not just one:
    ```
    npx skills add binance/binance-skills-hub/skills/binance-web3/binance-agentic-wallet
+   npx skills add binance/binance-skills-hub --skill query-token-audit
+   npx skills add binance/binance-skills-hub --skill query-token-info
    ```
+   `query-token-audit` is called directly by `skill/scripts/check-and-log.js` (a real HTTP call,
+   not a CLI shell-out) — it's how the security check is enforced in code rather than trusted
+   from the agent. `query-token-info` is what your agent should use to resolve a symbol like
+   "BNB" or "USDT" into the real contract address and chain ID this project's functions need —
+   nothing in this repo does that resolution itself.
 4. **Sign in.** Tell your agent: `Sign in to Binance Agentic Wallet`. It returns a sign-in link —
    open it on mobile to jump straight into the Binance App, or scan the QR code on desktop.
    First-time sign-in walks you through creating the Agentic Wallet itself.
@@ -49,11 +56,42 @@ to confirm the connection is live — Session 2 depends on it.
   SKILL.md                 — agent instructions: read rules, check limit, narrate, log, execute
   guardrails.config.json   — this project's own declared hard limit (separate from Binance App)
   scripts/
-    check-and-log.js       — stub (Session 1); becomes the only path to a write action (Session 3)
-    decisions.log.jsonl    — decision log, append-only, empty until Session 2/3
+    check-and-log.js       — fetchWalletRules, getSwapQuote, narrateDecision, checkAndExecute
+    decisions.log.jsonl    — decision log, append-only, empty until a real action is taken
+/demo
+  render.js                — reads the decision log, writes ledger.html (run after every action)
+  ledger.html               — generated; open in a browser during the demo
+  SCRIPT.md                 — suggested shot list for the Track A video
 README.md                  — this file
 SESSION_REPORT.md          — current build state (see build ruleset Section 5)
+package.json                — Node >=18, zero npm dependencies
 ```
 
 `/demo` (a thin display layer rendering the live decision ledger) doesn't exist yet — that's
 Session 4's scope, not Session 1's.
+
+## Demo
+
+After completing the one-time setup above and running at least one real action through the
+skill, generate the ledger page:
+
+```
+node demo/render.js
+```
+
+This writes `demo/ledger.html` from the current `skill/scripts/decisions.log.jsonl` — open it
+in a browser and reload after every action. See `demo/SCRIPT.md` for a suggested shot list for
+the required Track A video.
+
+## Before you submit
+
+- [ ] Completed the one-time wallet setup above (all three skills) and run at least one real
+      swap through the skill — nothing in this repo has touched a live wallet yet.
+- [ ] Confirmed what the CLI actually does when `abnormalTxnHandling` is `NeedConfirmation` —
+      this project currently refuses that path outright because it's never been tested live.
+- [ ] Recorded the demo video (see `demo/SCRIPT.md`).
+- [ ] Confirmed the exact judging rubric and team-size rules directly on Binance's hackathon
+      page/survey — these weren't publicly confirmable during this project's research (the
+      survey page blocks automated fetching).
+- [ ] Confirmed eligibility (not in US, UK, EEA, Hong Kong, or Singapore).
+- [ ] Submitted before **September 8, 2026, 23:59 UTC**.

@@ -2,15 +2,10 @@
 /**
  * check-and-log.js
  *
- * Session 2: fetchWalletRules(), getSwapQuote(), and narrateDecision() are implemented
- * for real, against Binance's documented `baw` CLI behavior (see references cited in
- * SESSION_REPORT.md — this has been verified against public docs, NOT against a live
- * connected wallet, since this build environment has no network access or Binance
- * account. Confirm against a real wallet before trusting this in the demo.
- *
- * checkAndExecute() is still a stub — Session 3 wires it to a real `market-order swap`
- * call, including the mandatory poll-to-terminal-state step documented below. Per
- * SKILL.md, no write-capable Agentic Wallet call happens anywhere outside this function.
+ * Session 5: replaced the self-reported `tokenAuditAcknowledged` flag with a real call to
+ * Binance's public query-token-audit API — the security pre-check is now enforced in code,
+ * not trusted from the caller. Added an execFileSync timeout and an idempotency guard.
+ * Still verified against documentation and a mock CLI only — see SESSION_REPORT.md.
  *
  * KNOWN LIMITATION (see SKILL.md): amountUsd is only meaningful when fromToken is a USD
  * stablecoin (USDT/USDC), since `market-order quote` returns token amounts, not a USD
@@ -20,24 +15,39 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { execFileSync } = require("child_process");
 
 const CONFIG_PATH = path.join(__dirname, "..", "guardrails.config.json");
 const LOG_PATH = path.join(__dirname, "decisions.log.jsonl");
+const BAW_TIMEOUT_MS = 20000;
 
 const STABLECOINS = new Set(["USDT", "USDC"]);
+const TOKEN_AUDIT_URL = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/security/token/audit";
 
 /** Shells out to the `baw` CLI. Always appends --json, per SKILL.md's "Build the Command" rule. */
 function runBaw(args) {
   let raw;
   try {
-    raw = execFileSync("baw", [...args, "--json"], { encoding: "utf8" });
+    raw = execFileSync("baw", [...args, "--json"], { encoding: "utf8", timeout: BAW_TIMEOUT_MS });
   } catch (err) {
     // Per the skill's own Error Handling rule: report the CLI's error as-is, don't guess why.
-    const detail = err.stderr ? err.stderr.toString() : err.message;
+    const detail = err.signal === "SIGTERM"
+      ? `timed out after ${BAW_TIMEOUT_MS}ms`
+      : (err.stderr ? err.stderr.toString() : err.message);
     throw new Error(`baw ${args.join(" ")} failed: ${detail}`);
   }
   return JSON.parse(raw);
+}
+
+/** Throws with a clear message if a response is missing fields this project depends on,
+ *  instead of silently continuing with `undefined` values in a financial narration. */
+function assertShape(obj, fields, label) {
+  const missing = fields.filter((f) => obj?.[f] === undefined);
+  if (missing.length) {
+    throw new Error(`${label} response is missing expected field(s): ${missing.join(", ")} — ` +
+      `real API shape may have changed since this was written against documentation. Raw: ${JSON.stringify(obj)}`);
+  }
 }
 
 /**
@@ -49,6 +59,7 @@ function fetchWalletRules() {
   const res = runBaw(["wallet", "settings"]);
   if (!res.success) throw new Error(`wallet settings returned success:false — ${JSON.stringify(res)}`);
   const d = res.data;
+  assertShape(d, ["dailyLimit", "quotaUsed", "quotaLeft", "abnormalTxnHandling", "tradeAllTokens"], "wallet settings");
   return {
     dailyLimitUsd: d.dailyLimit,
     dailyQuotaUsedUsd: d.quotaUsed,
@@ -60,6 +71,37 @@ function fetchWalletRules() {
     tradeAllTokens: d.tradeAllTokens,
     abnormalTxnHandling: d.abnormalTxnHandling, // "AutoReject" | "NeedConfirmation"
     quotaDate: d.quotaDate,
+  };
+}
+
+/**
+ * Real call to Binance's public query-token-audit API (documented separately from the
+ * baw CLI — see developers.binance.com/docs/products/wallet-skills). This is a code-level
+ * enforcement of the security pre-check, not a self-reported flag from the calling agent.
+ * Requires Node 18+ for global fetch.
+ */
+async function auditToken(contractAddress, binanceChainId) {
+  const requestId = crypto.randomUUID();
+  let res;
+  try {
+    res = await fetch(TOKEN_AUDIT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ binanceChainId: String(binanceChainId), contractAddress, requestId }),
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (err) {
+    throw new Error(`token audit request failed: ${err.message}`);
+  }
+  if (!res.ok) throw new Error(`token audit HTTP ${res.status}`);
+  const data = await res.json();
+  const dataAvailable = data.hasResult === true && data.isSupported === true;
+  return {
+    dataAvailable,
+    riskLevel: dataAvailable ? data.riskLevel : null,
+    riskItems: data.riskItems ?? [],
+    auditTime: data.auditTime ?? null,
+    raw: data,
   };
 }
 
@@ -75,6 +117,7 @@ function getSwapQuote({ fromTokenQty, fromToken, toToken, binanceChainId, slippa
   if (slippage) args.push("--slippage", String(slippage));
   const res = runBaw(args);
   if (!res.success) throw new Error(`market-order quote returned success:false — ${JSON.stringify(res)}`);
+  assertShape(res.data, ["fromCoinSymbol", "toCoinSymbol"], "market-order quote");
   return res.data; // { fromCoinSymbol, fromCoinAmount, toCoinSymbol, toCoinAmount, slippage }
 }
 
@@ -128,31 +171,65 @@ function sleep(ms) {
 
 /**
  * The ONLY place `market-order swap` is ever called from, per SKILL.md. In order:
- *   1. Quote + wallet rules + narration (all pure/read-only, implemented above)
- *   2. Refuse and log if the token-audit pre-check (security.md §1) wasn't acknowledged,
- *      or if narrateDecision().proceed is false — never partially execute
- *   3. Only then submit the real swap
- *   4. Poll to a TERMINAL state — an orderId means submitted, not completed (market-order.md)
- *   5. Log the final, real outcome — never the submit response alone
+ *   1. Idempotency check — refuse to resubmit a swap already logged under the same key
+ *   2. Real security audit on the token being acquired (toToken) — code-enforced, not
+ *      self-reported. riskLevel 4-5 is a hard block; 2-3 requires elevatedRiskAcknowledged
+ *   3. Quote + wallet rules + narration (pure/read-only)
+ *   4. Refuse and log if narrateDecision().proceed is false, or if the wallet's abnormal-
+ *      transaction handling is NeedConfirmation (unverified path — see comment below)
+ *   5. Only then submit the real swap
+ *   6. Poll to a TERMINAL state — an orderId means submitted, not completed (market-order.md)
+ *   7. Log the final, real outcome — never the submit response alone
  *
- * proposedSwap: { fromTokenQty, fromToken, toToken, binanceChainId, chainName,
- *                 slippage?, mev?, gasLevel?, tokenAuditAcknowledged }
+ * proposedSwap: { idempotencyKey, fromTokenQty, fromToken, toToken, binanceChainId, chainName,
+ *                 slippage?, mev?, gasLevel?, elevatedRiskAcknowledged? }
  */
 async function checkAndExecute(proposedSwap) {
   const {
-    fromTokenQty, fromToken, toToken, binanceChainId, chainName,
-    slippage, mev, gasLevel, tokenAuditAcknowledged,
+    idempotencyKey, fromTokenQty, fromToken, toToken, binanceChainId, chainName,
+    slippage, mev, gasLevel, elevatedRiskAcknowledged,
   } = proposedSwap;
   const baseParams = { fromTokenQty, fromToken, toToken, binanceChainId };
 
-  // Code-level checkpoint for Binance's own security.md §1 pre-check — not just a prose
-  // instruction, since the whole point of this project is that guardrails live in code.
-  if (!tokenAuditAcknowledged) {
+  if (!idempotencyKey) {
     return logDecision({
-      action: "swap", status: "refused", reason: "token_audit_not_acknowledged",
-      params: baseParams,
-      narration: "Refused: the swap security pre-check (query-token-audit, per security.md §1) " +
-        "must be completed and acknowledged before this wrapper will submit a swap.",
+      action: "swap", status: "refused", reason: "missing_idempotency_key", params: baseParams,
+      narration: "Refused: every proposed swap needs a unique idempotencyKey so a repeated " +
+        "or retried request can't submit twice.",
+    });
+  }
+  const already = loadEntries().find((e) => e.idempotencyKey === idempotencyKey);
+  if (already) {
+    return { ...already, deduped: true };
+  }
+
+  // Real, code-enforced security check — not a flag the caller can set without having done it.
+  let audit;
+  try {
+    audit = await auditToken(toToken, binanceChainId);
+  } catch (err) {
+    return logDecision({
+      action: "swap", status: "audit_failed", idempotencyKey, params: baseParams,
+      narration: `Refused: could not complete the token security audit (${err.message}) — ` +
+        "failing closed rather than trading an unaudited token.",
+    });
+  }
+  if (audit.dataAvailable && audit.riskLevel >= 4) {
+    return logDecision({
+      action: "swap", status: "refused", reason: "token_audit_high_risk", idempotencyKey,
+      params: baseParams, audit,
+      narration: `Refused: query-token-audit scored the destination token riskLevel ${audit.riskLevel} ` +
+        `(${audit.riskLevel === 5 ? "severe confirmed risk" : "critical risk"}) — this project hard-blocks ` +
+        "that regardless of any other setting.",
+    });
+  }
+  if (audit.dataAvailable && audit.riskLevel >= 2 && !elevatedRiskAcknowledged) {
+    return logDecision({
+      action: "swap", status: "refused", reason: "elevated_risk_not_acknowledged", idempotencyKey,
+      params: baseParams, audit,
+      narration: `Refused: query-token-audit scored the destination token riskLevel ${audit.riskLevel} ` +
+        "(moderate risk — review carefully). Proceeding requires elevatedRiskAcknowledged:true from " +
+        "an explicit human decision, not an automatic default.",
     });
   }
 
@@ -165,9 +242,22 @@ async function checkAndExecute(proposedSwap) {
     config.MAX_ACTION_USD
   );
 
+  // UNVERIFIED PATH: we don't know what the CLI actually returns while a NeedConfirmation
+  // transaction is awaiting in-app approval — refuse here rather than guess at handling it.
+  if (rules.abnormalTxnHandling === "NeedConfirmation") {
+    return logDecision({
+      action: "swap", status: "refused", reason: "needs_confirmation_path_unverified", idempotencyKey,
+      params: baseParams, quote, narration: decision.narration +
+        " Additionally: this wallet is set to NeedConfirmation for abnormal transactions, and this " +
+        "project has never verified what the CLI does while that confirmation is pending — refusing " +
+        "rather than risk a silent double-submit or a hang. Switch to AutoReject to use this flow, " +
+        "or treat this as the next thing to test live.",
+    });
+  }
+
   if (!decision.proceed) {
     return logDecision({
-      action: "swap", status: "refused", params: baseParams, quote, narration: decision.narration,
+      action: "swap", status: "refused", idempotencyKey, params: baseParams, quote, narration: decision.narration,
     });
   }
 
@@ -182,13 +272,13 @@ async function checkAndExecute(proposedSwap) {
     submitRes = runBaw(swapArgs);
   } catch (err) {
     return logDecision({
-      action: "swap", status: "submit_failed", params: baseParams,
+      action: "swap", status: "submit_failed", idempotencyKey, params: baseParams,
       narration: decision.narration, error: err.message,
     });
   }
   if (!submitRes.success) {
     return logDecision({
-      action: "swap", status: "submit_rejected", params: baseParams,
+      action: "swap", status: "submit_rejected", idempotencyKey, params: baseParams,
       narration: decision.narration, response: submitRes,
     });
   }
@@ -212,9 +302,14 @@ async function checkAndExecute(proposedSwap) {
     : "still_pending"; // do NOT report success — tell the user it's still processing
 
   return logDecision({
-    action: "swap", orderId, params: baseParams, narration: decision.narration,
+    action: "swap", orderId, idempotencyKey, params: baseParams, narration: decision.narration,
     status, txHash: order?.txHash ?? null, finalOrder: order,
   });
+}
+
+function loadEntries() {
+  if (!fs.existsSync(LOG_PATH)) return [];
+  return fs.readFileSync(LOG_PATH, "utf8").split("\n").map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l));
 }
 
 function logDecision(entry) {
@@ -226,8 +321,10 @@ function logDecision(entry) {
 module.exports = {
   fetchWalletRules,
   getSwapQuote,
+  auditToken,
   narrateDecision,
   checkAndExecute,
   logDecision,
   loadConfig,
+  loadEntries,
 };

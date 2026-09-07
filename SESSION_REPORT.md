@@ -215,3 +215,171 @@ behaves this way; that remains unverified until the first real call.
   action" portion of the demo depends on this real-wallet pass happening first.
 
 **Style history:** N/A — not a UI-touching session.
+
+---
+
+## Session 4: Demo, Polish & Submission
+
+**Date:** 2026-09-05
+**Goal:** Thin display layer for the decision ledger, demo shot list, README/submission
+polish. Explicitly did NOT attempt: recording the actual video, submitting the survey, or
+reposting on X — all genuinely human actions on the human's own accounts.
+
+**Files added/changed:**
+- `demo/render.js` — new. Reads `skill/scripts/decisions.log.jsonl`, writes `demo/ledger.html`.
+  Zero dependencies (Node built-ins only). Design: a "ledger book" aesthetic (deep green cover,
+  paper sheet, ruled entries, monospace data) chosen because it's grounded in the actual product
+  concept — a literal ledger — rather than a generic dashboard. Verified visually via a
+  screenshot render (see Verification below); summary-row spacing was fixed after the first
+  screenshot showed the count labels running together.
+- `demo/ledger.html` — generated output, ships in its current empty state (0 entries).
+- `demo/SCRIPT.md` — new. A 6-shot outline for the required Track A video, explicit that the
+  real-wallet pass must happen before recording — no shot should show simulated data.
+- `README.md` — added a Demo section and a "Before you submit" checklist.
+- `skill/SKILL.md` — status section updated.
+
+**Current full file tree:**
+```
+.
+├── .gitignore
+├── README.md
+├── SESSION_REPORT.md
+├── package.json
+├── demo
+│   ├── render.js
+│   ├── ledger.html
+│   └── SCRIPT.md
+└── skill
+    ├── SKILL.md
+    ├── guardrails.config.json
+    └── scripts
+        ├── check-and-log.js
+        └── decisions.log.jsonl
+```
+
+**Dependencies installed:** None in the repo itself. `demo/ledger.html` loads Zilla Slab and
+IBM Plex Mono from Google Fonts' CDN at view time (requires internet on whatever machine opens
+it — not a repo dependency).
+
+**Agent OS mode:** testnet (practical) — **still unconfirmed hands-on, four sessions running.**
+This is now the single largest risk to the submission and should be resolved today.
+
+**Decision log:** `decisions.log.jsonl` ships empty — no real action has been taken through this
+project at any point across all four sessions.
+
+**Verification performed:** `demo/render.js` was run against three synthetic log states (empty,
+and a 3-entry set covering refused/over-limit/executed) and the output was screenshotted via
+`wkhtmltoimage` for visual review, per the frontend-design skill's self-critique step. The
+Google Fonts CDN link was stripped for the offline screenshot only (this sandbox has no network
+access) — the shipped file keeps the real CDN link, so fonts will render correctly wherever the
+person actually opens it with internet access. One real bug was caught and fixed this way: the
+summary row's count labels ("logged"/"executed"/"refused") ran together with no separation in
+the screenshot, traced to `gap` not rendering in the old rendering engine used for the preview;
+fixed by wrapping each label in its own block-level element instead of relying on flex gap alone.
+
+**Known stubs/mocks/TODOs:**
+- The entire project remains untested against a real wallet. This is not a code TODO — it's a
+  precondition for the demo and the submission both.
+- The exact Binance judging rubric, team-size rule, and precise submission mechanics for Track A
+  specifically (beyond "video + GitHub repo + survey") remain unconfirmed — the survey page
+  blocks automated fetching. Recommend the human check `https://www.binance.com/en/survey/...`
+  (see README) directly today, given the deadline.
+- Recording, reposting, and survey submission are manual human actions on the human's own
+  accounts — not something a build session can do or fake on their behalf.
+
+**Assumptions carried into next session:** none — this is the last planned session per
+`BUILD_ROADMAP.md`. If more work is needed after the real-wallet pass (e.g. fixing something
+that behaves differently than the mock predicted), treat that as a new, small session rather
+than reopening this one.
+
+**Style history:** ledger-book aesthetic — deep forest green cover (#2F4B3C), warm paper
+(#F4F2E8), sage rule lines (#B9C9B6), muted approve/refuse/pending accents (avoiding the
+generic cream+terracotta+serif-display combination); Zilla Slab for headings, IBM Plex Mono for
+data, chosen because the data is genuinely tabular/numeric, not for decoration.
+
+---
+
+## Session 5: Hardening (added after Session 4's gap review)
+
+**Date:** 2026-09-06
+**Goal:** Address the two blocking gaps flagged in the post-Session-4 audit (self-reported
+security check, undocumented token resolution) plus three smaller real risks (no timeout, no
+idempotency guard, silent-undefined on unexpected response shape). Not in the original
+`BUILD_ROADMAP.md` — added because the audit found real issues, not because the plan called for it.
+
+**New research this session:** found that `query-token-audit` and `query-token-info` are
+separate, independently-installable Binance Skills Hub skills (not bundled inside
+`binance-agentic-wallet`), and that `query-token-audit` has a documented public HTTP endpoint
+(`developers.binance.com/docs/products/wallet-skills`, cross-referenced against two independent
+third-party skill-directory listings for the request/response shape and the BSC=56 / Base=8453 /
+Ethereum=1 / Solana=CT_501 chain ID table).
+
+**Files added/changed:**
+- `skill/scripts/check-and-log.js` — added `auditToken()` (real HTTP call to Binance's public
+  token-audit endpoint, not a CLI shell-out); rewrote `checkAndExecute()` to require an
+  `idempotencyKey`, call `auditToken()` before anything else, hard-block riskLevel 4–5, require
+  `elevatedRiskAcknowledged` for riskLevel 2–3, and refuse outright (rather than guess) when the
+  wallet's `abnormalTxnHandling` is `NeedConfirmation`; added `assertShape()` so a missing
+  expected field in a real response throws a clear error instead of producing a silent
+  `undefined`; added a 20s timeout to `runBaw()`.
+- `skill/SKILL.md` — rewrote the main instruction list to match the real, current behavior;
+  removed the now-inaccurate `tokenAuditAcknowledged` self-report description.
+- `README.md` — added `query-token-audit` and `query-token-info` to the required installs;
+  added two items to the submission checklist.
+- `BUILD_ROADMAP.md` — appended this session, noted as added after the fact.
+
+**Verification performed:** extended the mock-CLI approach from Session 3 — mocked both `baw`
+and the global `fetch` used by `auditToken()` — and ran six cases: missing idempotency key
+(refused), riskLevel 5 (hard-blocked, no swap attempted), riskLevel 3 unacknowledged (refused),
+riskLevel 3 acknowledged (executed), a repeated idempotencyKey against the same case (returned
+the original logged result, no second submission), and `NeedConfirmation` (refused with the
+unverified-path explanation). All six matched expected behavior. This is still documentation-
+and-mock verification, not a real API call — `query-token-audit`'s real response has never been
+seen by this project.
+
+**Known stubs/mocks/TODOs:**
+- `NeedConfirmation` is refused, not implemented — genuinely unhandled, by design, until it can
+  be tested live.
+- `auditToken()` audits only the destination token (`toToken`), not the source — consistent
+  with common due-diligence practice (you already hold the source token) but worth naming as a
+  scope choice, not an oversight.
+- The idempotency guard is a linear scan of the whole log file per call — fine at hackathon
+  scale, would need an index for anything larger.
+
+**Assumptions carried forward:** everything from Sessions 1–4 that's still open, plus: the real
+`query-token-audit` response shape has only been cross-referenced across public documentation
+and third-party listings, never seen directly from Binance.
+
+**Style history:** no UI changes this session.
+
+---
+
+## Session 6: Submission copy
+
+**Date:** 2026-09-06
+**Goal:** Judge-facing pitch text for the README and draft social-post copy for entry — no code
+changes.
+
+**Files changed:** `README.md` — replaced the opening paragraph with a tighter, judge-facing
+pitch (see below for the reasoning).
+
+**Note on submission mechanics:** Track A's exact entry format (whether it requires a reply to
+a specific Binance post, specific hashtags, or a specific tag) was not confirmed — the survey
+page still blocks automated fetching, and search only confirmed Track B's follow/repost/reply
+pattern, not Track A's. The draft post text given to the human is explicitly flagged as
+best-guess, to be checked against Binance's actual announcement post before use.
+
+**Style history:** none — copy only, no visual changes.
+
+---
+
+## Session 7: Submission Q&A
+
+**Date:** 2026-09-06
+**Goal:** Answer the survey's three text fields (project name, description, replication guide)
+grounded in what's actually built — no code changes.
+
+**Files added:** `SUBMISSION.md` — project name, description, and a 10-step replication guide
+matching the real README setup steps plus actual skill usage.
+
+**Style history:** none — copy only.

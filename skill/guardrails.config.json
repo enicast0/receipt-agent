@@ -1,0 +1,6 @@
+{
+  "MAX_ACTION_USD": 10,
+  "_comment": "This project's own declared ceiling for any single swap/transfer/order, enforced in scripts/check-and-log.js (Session 3). Separate from, and in addition to, the daily limit and tradable token scope configured in the Binance App itself. Raise this only deliberately, and only once you've decided how much you're comfortable funding the demo wallet with — treat this file as the single source of truth for the limit, not a value repeated elsewhere.",
+  "mode": "practical-testnet",
+  "_mode_comment": "No dedicated sandbox/testnet product was found for Agentic Wallet at Session 0 research time (unlike the trading MCP server's BINANCE_TESTNET_* split). Until Session 1's live connection step proves otherwise, 'testnet' here means: a minimally funded live wallet with the tightest daily limit and narrowest token scope set in the Binance App. Update this field to 'mainnet' only via the Section 9.2 go-live checklist."
+}

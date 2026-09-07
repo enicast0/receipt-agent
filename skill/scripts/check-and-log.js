@@ -122,22 +122,99 @@ function narrateDecision({ fromTokenQty, fromCoinSymbol, toCoinSymbol, chainName
   return { narration, withinProjectLimit, withinDailyQuota, proceed: withinProjectLimit && withinDailyQuota };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * STUB — Session 3 scope. Per SKILL.md, this is the only place `market-order swap` may
- * ever be called from. Must, in order:
- *   1. Call getSwapQuote() + fetchWalletRules() + narrateDecision() (all implemented above)
- *   2. Refuse and log if narrateDecision().proceed is false — never partially execute
- *   3. If it passes, call `baw market-order swap ...` for real
- *   4. Per market-order.md: an orderId is NOT a completed swap. Poll
- *      `market-order list --orderId <id> --json` until status is FINISHED or FAILED
- *      (PENDING is not terminal) before reporting anything to the user
- *   5. Append the final outcome (including txHash if FINISHED) to decisions.log.jsonl
+ * The ONLY place `market-order swap` is ever called from, per SKILL.md. In order:
+ *   1. Quote + wallet rules + narration (all pure/read-only, implemented above)
+ *   2. Refuse and log if the token-audit pre-check (security.md §1) wasn't acknowledged,
+ *      or if narrateDecision().proceed is false — never partially execute
+ *   3. Only then submit the real swap
+ *   4. Poll to a TERMINAL state — an orderId means submitted, not completed (market-order.md)
+ *   5. Log the final, real outcome — never the submit response alone
+ *
+ * proposedSwap: { fromTokenQty, fromToken, toToken, binanceChainId, chainName,
+ *                 slippage?, mev?, gasLevel?, tokenAuditAcknowledged }
  */
-function checkAndExecute(proposedSwap) {
-  throw new Error(
-    "checkAndExecute() is not implemented yet (Session 2 stub). " +
-      "Do not wire this to a real market-order swap call until Session 3."
+async function checkAndExecute(proposedSwap) {
+  const {
+    fromTokenQty, fromToken, toToken, binanceChainId, chainName,
+    slippage, mev, gasLevel, tokenAuditAcknowledged,
+  } = proposedSwap;
+  const baseParams = { fromTokenQty, fromToken, toToken, binanceChainId };
+
+  // Code-level checkpoint for Binance's own security.md §1 pre-check — not just a prose
+  // instruction, since the whole point of this project is that guardrails live in code.
+  if (!tokenAuditAcknowledged) {
+    return logDecision({
+      action: "swap", status: "refused", reason: "token_audit_not_acknowledged",
+      params: baseParams,
+      narration: "Refused: the swap security pre-check (query-token-audit, per security.md §1) " +
+        "must be completed and acknowledged before this wrapper will submit a swap.",
+    });
+  }
+
+  const quote = getSwapQuote({ fromTokenQty, fromToken, toToken, binanceChainId, slippage });
+  const rules = fetchWalletRules();
+  const config = loadConfig();
+  const decision = narrateDecision(
+    { fromTokenQty, fromCoinSymbol: quote.fromCoinSymbol, toCoinSymbol: quote.toCoinSymbol, chainName },
+    rules,
+    config.MAX_ACTION_USD
   );
+
+  if (!decision.proceed) {
+    return logDecision({
+      action: "swap", status: "refused", params: baseParams, quote, narration: decision.narration,
+    });
+  }
+
+  const swapArgs = ["market-order", "swap", "--fromTokenQty", String(fromTokenQty),
+    "--fromToken", fromToken, "--toToken", toToken, "--binanceChainId", String(binanceChainId)];
+  if (slippage) swapArgs.push("--slippage", String(slippage));
+  if (mev !== undefined) swapArgs.push("--mev", String(mev));
+  if (gasLevel) swapArgs.push("--gasLevel", gasLevel);
+
+  let submitRes;
+  try {
+    submitRes = runBaw(swapArgs);
+  } catch (err) {
+    return logDecision({
+      action: "swap", status: "submit_failed", params: baseParams,
+      narration: decision.narration, error: err.message,
+    });
+  }
+  if (!submitRes.success) {
+    return logDecision({
+      action: "swap", status: "submit_rejected", params: baseParams,
+      narration: decision.narration, response: submitRes,
+    });
+  }
+
+  const orderId = submitRes.data.orderId;
+
+  // MANDATORY per market-order.md: orderId != completed. Poll to FINISHED or FAILED.
+  // ~3s x 15 = 45s, a bit above the doc's own "~30s is a reasonable wait" guidance.
+  const POLL_INTERVAL_MS = 3000;
+  const MAX_POLLS = 15;
+  let order = null;
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await sleep(POLL_INTERVAL_MS);
+    const listRes = runBaw(["market-order", "list", "--orderId", orderId]);
+    order = listRes?.data?.list?.[0] ?? null;
+    if (order?.status === "FINISHED" || order?.status === "FAILED") break;
+  }
+
+  const status = order?.status === "FINISHED" ? "executed"
+    : order?.status === "FAILED" ? "failed"
+    : "still_pending"; // do NOT report success — tell the user it's still processing
+
+  return logDecision({
+    action: "swap", orderId, params: baseParams, narration: decision.narration,
+    status, txHash: order?.txHash ?? null, finalOrder: order,
+  });
 }
 
 function logDecision(entry) {

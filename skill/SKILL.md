@@ -37,24 +37,28 @@ For every user request that could result in an on-chain action (swap, transfer, 
    `scripts/check-and-log.js`, so the limit check and the log entry cannot be skipped by a
    miscounted step in reasoning.
 
-## Current status (Session 2)
+## Current status (Session 3)
 
-- Wallet connection: pending manual setup — see repo `README.md` for the exact steps. This
-  agent should not assume a wallet is connected until that setup is confirmed complete.
-- `scripts/check-and-log.js` now has **real, working** read-only logic: `fetchWalletRules()`
-  (shells out to `baw wallet settings --json`), `getSwapQuote()` (`baw market-order quote --json`),
-  and `narrateDecision()` (pure comparison logic, unit-tested against mock data shaped like
-  Binance's documented response). These are written against Binance's public `binance-agentic-wallet`
-  reference docs, not against a live call — confirm against your actual connected wallet before
-  trusting the numbers in a real demo.
-- `checkAndExecute()` is still a **stub** — it must never be wired to a real `market-order swap`
-  call until Session 3, which also has to implement the mandatory poll-to-terminal-state step
-  (an `orderId` from `market-order swap` means submitted, not completed — see the function's
-  own comments for the full sequence).
-- **Known limitation:** this project can only estimate a swap's USD value when the source token
-  is a stablecoin (USDT/USDC), since `market-order quote` returns token amounts, not USD, and no
-  price oracle is wired in. Swaps from a non-stable token are out of scope for this MVP —
-  `narrateDecision()` refuses them outright rather than guessing a conversion.
-- Security pre-check for swaps (the `query-token-audit` flow in Binance's own `security.md`)
-  still applies on top of everything here — this project's guardrail is an addition to Binance's
-  own checks, not a replacement for them.
+- Wallet connection: **still pending manual setup as of this session** — the human has not yet
+  completed the README steps. Everything below has been tested against a mock CLI shaped like
+  Binance's documented responses, but has never touched a real `baw` binary or a real wallet.
+  Do not treat it as demo-ready until that connection is confirmed and re-tested for real.
+- `checkAndExecute()` is now **fully implemented**: refuses if the swap security pre-check
+  (`tokenAuditAcknowledged`) wasn't done; refuses and logs if `narrateDecision()` says not to
+  proceed; otherwise submits `market-order swap`, then polls `market-order list --orderId ...`
+  every 3s (up to 15 times, ~45s) until the order reaches `FINISHED` or `FAILED` — an `orderId`
+  alone is never reported as success. Every path — refused, submit-failed, submit-rejected,
+  executed, failed, or still-pending — writes one line to `decisions.log.jsonl`.
+- This agent must **always** pass `tokenAuditAcknowledged: true` to `checkAndExecute()` only
+  after actually completing Binance's own swap security pre-check (`security.md §1` —
+  `query-token-audit` for any target token not already in the Common Token Addresses table).
+  Never set this flag without having done the check; it exists so that step can't be silently
+  skipped, not so it can be rubber-stamped.
+- **Known limitation (unchanged):** USD estimation only works when the source token is a
+  stablecoin (USDT/USDC) — `narrateDecision()` refuses anything else outright.
+- **Verification method (Section 9.8):** a throwaway mock `baw` CLI (not part of this repo) was
+  built from Binance's documented response shapes and used to run `checkAndExecute()` end to
+  end twice — once refused (audit not acknowledged) and once through a full submit → PENDING →
+  FINISHED poll cycle with a logged `txHash`. This proves the control flow is correct against
+  those documented shapes; it does **not** prove Binance's real CLI behaves identically. The
+  first real call must be treated as unverified until it happens.

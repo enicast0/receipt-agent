@@ -154,3 +154,64 @@ connected Binance account. Confirm against a real wallet before the actual demo 
   on first real rejected call, per Section 9.8, rather than assume a shape.
 
 **Style history:** N/A — not a UI-touching session.
+
+---
+
+## Session 3: Guarded Execution
+
+**Date:** 2026-09-05
+**Goal:** Implement `checkAndExecute()` for real — the single choke point for any live swap —
+including mandatory poll-to-terminal-state, without ever touching a real wallet.
+
+**Files added/changed:**
+- `skill/scripts/check-and-log.js` — `checkAndExecute()` implemented in full (was a stub).
+- `skill/SKILL.md` — status section updated; added the `tokenAuditAcknowledged` contract.
+
+**Current full file tree:** unchanged from Session 2.
+
+**Dependencies installed:** None (unchanged).
+
+**Agent OS mode:** testnet (practical) — **still unconfirmed hands-on.** This is the third
+session in a row carrying this same open item. It must be resolved before Session 4's demo.
+
+**Sub-account scope & limits:** `MAX_ACTION_USD = 10` is now actually enforced in code —
+`checkAndExecute()` will not submit a swap that fails `narrateDecision()`'s check. This is the
+first session where that claim is true; Sessions 1–2 declared the limit but didn't enforce it.
+
+**Decision log (this session):** None shipped — `decisions.log.jsonl` ships empty. Two test
+entries were produced during development against a throwaway mock CLI, inspected, and cleared;
+see Verification below.
+
+**API endpoints live:** None.
+
+**Verification performed (Section 9.8):** Built a temporary mock `baw` executable (not part of
+this repo, deleted after use) returning responses shaped exactly like Binance's documented
+`wallet settings`, `market-order quote`, `market-order swap`, and `market-order list` output.
+Ran `checkAndExecute()` against it twice:
+1. `tokenAuditAcknowledged: false` → refused immediately, `quote`/`swap` never called, one log
+   line with `status: "refused"`, `reason: "token_audit_not_acknowledged"`.
+2. `tokenAuditAcknowledged: true`, 5 USDT swap (within both the $10 project ceiling and the
+   mock's $8 remaining daily quota) → quote fetched, rules fetched, narration produced, swap
+   submitted, first poll returned `PENDING`, second poll returned `FINISHED` with a mock
+   `txHash`, and the final log entry correctly recorded `status: "executed"` with that `txHash`.
+
+This confirms the control flow — guardrail-then-submit-then-poll-then-log — is internally
+correct against those documented shapes. It does **not** confirm Binance's real CLI actually
+behaves this way; that remains unverified until the first real call.
+
+**Known stubs/mocks/TODOs:**
+- Nothing left stubbed in `check-and-log.js` for the swap path specifically. `wallet send`
+  (transfer) and `defi deposit`/`lp-add` are not implemented — only swap, per Session 0's scope.
+- `/demo` still doesn't exist — Session 4.
+
+**Assumptions carried into next session:**
+- All open items from Sessions 1–2 remain open: live connection unconfirmed, no verified
+  sandbox mode for Agentic Wallet, judging rubric unconfirmed, exact rejected-swap error shape
+  from a real `baw` call unconfirmed.
+- Before recording the demo video, run the full flow once against a real, minimally-funded,
+  tightly-limited wallet and confirm the narration and logged outcome match reality — do not
+  demo directly from this session's mock-verified state without that real pass.
+- Session 4 (demo + submission) can proceed on the display layer regardless, but the "live
+  action" portion of the demo depends on this real-wallet pass happening first.
+
+**Style history:** N/A — not a UI-touching session.
